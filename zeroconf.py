@@ -31,7 +31,7 @@ import sys
 import threading
 import time
 from functools import reduce
-from typing import AnyStr, Dict, List, Optional, Union, cast
+from typing import Any, AnyStr, Dict, List, MutableSequence, Optional, SupportsInt, Union, cast
 from typing import Callable, Set, Tuple  # noqa # used in type hints
 
 import ifaddr
@@ -177,7 +177,7 @@ def current_time_millis() -> float:
     return time.time() * 1000
 
 
-def service_type_name(type_, *, allow_underscores: bool = False):
+def service_type_name(type_: str, *, allow_underscores: bool = False) -> str:
     """
     Validate a fully qualified service name, instance or subtype. [rfc6763]
 
@@ -318,67 +318,67 @@ class BadTypeInNameException(Error):
 
 
 class QuietLogger:
-    _seen_logs = {}  # type: Dict[str, tuple]
+    _seen_logs = {}  # type: Dict[str, int]
 
     @classmethod
-    def log_exception_warning(cls, logger_data=None):
+    def log_exception_warning(cls, logger_data: Optional[Any] = None) -> None:
         exc_info = sys.exc_info()
         exc_str = str(exc_info[1])
         if exc_str not in cls._seen_logs:
             # log at warning level the first time this is seen
-            cls._seen_logs[exc_str] = exc_info
+            cls._seen_logs[exc_str] = 0
             logger = log.warning
         else:
             logger = log.debug
+        cls._seen_logs[exc_str] += 1
         if logger_data is not None:
             logger(*logger_data)
         logger('Exception occurred:', exc_info=True)
 
     @classmethod
-    def log_warning_once(cls, *args):
-        msg_str = args[0]
+    def log_warning_once(cls, msg_str: str, *args: Any) -> None:
         if msg_str not in cls._seen_logs:
             cls._seen_logs[msg_str] = 0
             logger = log.warning
         else:
             logger = log.debug
         cls._seen_logs[msg_str] += 1
-        logger(*args)
+        logger(msg_str, *args)
 
 
 class DNSEntry:
 
     """A DNS entry"""
 
-    def __init__(self, name: str, type_: int, class_):
+    def __init__(self, name: str, type_: int, class_: int):
         self.key = name.lower()
         self.name = name
         self.type = type_
         self.class_ = class_ & _CLASS_MASK
         self.unique = (class_ & _CLASS_UNIQUE) != 0
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         """Equality test on name, type, and class"""
         return (isinstance(other, DNSEntry) and
                 self.name == other.name and
                 self.type == other.type and
                 self.class_ == other.class_)
 
-    def __ne__(self, other):
+    def __ne__(self, other: Any) -> bool:
         """Non-equality test"""
         return not self.__eq__(other)
 
     @staticmethod
-    def get_class_(class_):
+    def get_class_(class_: int) -> str:
         """Class accessor"""
         return _CLASSES.get(class_, "?(%s)" % class_)
 
     @staticmethod
-    def get_type(t):
+    def get_type(t: int) -> str:
         """Type accessor"""
         return _TYPES.get(t, "?(%s)" % t)
 
-    def to_string(self, hdr, other) -> str:
+    def to_string(self, hdr: str, other: Optional[str] = None) -> str:
         """String representation with additional information"""
         result = "%s[%s,%s" % (hdr, self.get_type(self.type),
                                self.get_class_(self.class_))
@@ -416,20 +416,20 @@ class DNSRecord(DNSEntry):
 
     """A DNS record - like a DNS entry, but has a TTL"""
 
-    def __init__(self, name, type_, class_, ttl: float):
+    def __init__(self, name: str, type_: int, class_: int, ttl: float):
         DNSEntry.__init__(self, name, type_, class_)
         self.ttl = ttl
         self.created = current_time_millis()
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         """Abstract method"""
         raise AbstractMethodException
 
-    def __ne__(self, other):
+    def __ne__(self, other: Any) -> bool:
         """Non-equality test"""
         return not self.__eq__(other)
 
-    def suppressed_by(self, msg):
+    def suppressed_by(self, msg: 'DNSIncoming') -> bool:
         """Returns true if any answer in a message can suffice for the
         information held in this record."""
         for record in msg.answers:
@@ -437,7 +437,7 @@ class DNSRecord(DNSEntry):
                 return True
         return False
 
-    def suppressed_by_answer(self, other):
+    def suppressed_by_answer(self, other: 'DNSRecord') -> bool:
         """Returns true if another record has same name, type and class,
         and if its TTL is at least half of this record's."""
         return self == other and other.ttl > (self.ttl / 2)
@@ -447,7 +447,7 @@ class DNSRecord(DNSEntry):
         by a certain percentage."""
         return self.created + (percent * self.ttl * 10)
 
-    def get_remaining_ttl(self, now):
+    def get_remaining_ttl(self, now: float) -> float:
         """Returns the remaining TTL in seconds."""
         return max(0, (self.get_expiration_time(100) - now) / 1000.0)
 
@@ -455,21 +455,21 @@ class DNSRecord(DNSEntry):
         """Returns true if this record has expired."""
         return self.get_expiration_time(100) <= now
 
-    def is_stale(self, now):
+    def is_stale(self, now: float) -> bool:
         """Returns true if this record is at least half way expired."""
         return self.get_expiration_time(50) <= now
 
-    def reset_ttl(self, other):
+    def reset_ttl(self, other: 'DNSRecord') -> None:
         """Sets this record's TTL and created time to that of
         another record."""
         self.created = other.created
         self.ttl = other.ttl
 
-    def write(self, out):
+    def write(self, out: 'DNSOutgoing') -> None:
         """Abstract method"""
         raise AbstractMethodException
 
-    def to_string(self, other):
+    def to_string(self, other) -> str:
         """String representation with additional information"""
         arg = "%s/%s,%s" % (
             self.ttl, self.get_remaining_ttl(current_time_millis()), other)
@@ -480,24 +480,24 @@ class DNSAddress(DNSRecord):
 
     """A DNS address record"""
 
-    def __init__(self, name, type_, class_, ttl, address):
+    def __init__(self, name: str, type_: int, class_: int, ttl: float, address: bytes):
         DNSRecord.__init__(self, name, type_, class_, ttl)
         self.address = address
 
-    def write(self, out):
+    def write(self, out: 'DNSOutgoing') -> None:
         """Used in constructing an outgoing packet"""
         out.write_string(self.address)
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         """Tests equality on address"""
         return (isinstance(other, DNSAddress) and DNSEntry.__eq__(self, other) and
                 self.address == other.address)
 
-    def __ne__(self, other):
+    def __ne__(self, other: Any) -> bool:
         """Non-equality test"""
         return not self.__eq__(other)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """String representation"""
         try:
             return str(socket.inet_ntoa(self.address))
@@ -509,32 +509,32 @@ class DNSHinfo(DNSRecord):
 
     """A DNS host information record"""
 
-    def __init__(self, name, type_, class_, ttl, cpu, os):
+    def __init__(self, name: str, type_: int, class_: int, ttl: float, cpu: AnyStr, os: AnyStr):
         DNSRecord.__init__(self, name, type_, class_, ttl)
         try:
-            self.cpu = cpu.decode('utf-8')
+            self.cpu = cpu.decode('utf-8')  # type: str
         except AttributeError:
             self.cpu = cpu
         try:
-            self.os = os.decode('utf-8')
+            self.os = os.decode('utf-8')  # type: str
         except AttributeError:
             self.os = os
 
-    def write(self, out):
+    def write(self, out: 'DNSOutgoing') -> None:
         """Used in constructing an outgoing packet"""
         out.write_character_string(self.cpu.encode('utf-8'))
         out.write_character_string(self.os.encode('utf-8'))
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         """Tests equality on cpu and os"""
         return (isinstance(other, DNSHinfo) and DNSEntry.__eq__(self, other) and
                 self.cpu == other.cpu and self.os == other.os)
 
-    def __ne__(self, other):
+    def __ne__(self, other: Any) -> bool:
         """Non-equality test"""
         return not self.__eq__(other)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """String representation"""
         return self.cpu + " " + self.os
 
@@ -543,24 +543,24 @@ class DNSPointer(DNSRecord):
 
     """A DNS pointer record"""
 
-    def __init__(self, name, type_, class_, ttl, alias):
+    def __init__(self, name: str, type_: int, class_: int, ttl: float, alias: str):
         DNSRecord.__init__(self, name, type_, class_, ttl)
         self.alias = alias
 
-    def write(self, out):
+    def write(self, out: 'DNSOutgoing') -> None:
         """Used in constructing an outgoing packet"""
         out.write_name(self.alias)
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         """Tests equality on alias"""
         return (isinstance(other, DNSPointer) and DNSEntry.__eq__(self, other) and
                 self.alias == other.alias)
 
-    def __ne__(self, other):
+    def __ne__(self, other: Any) -> bool:
         """Non-equality test"""
         return not self.__eq__(other)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """String representation"""
         return self.to_string(self.alias)
 
@@ -569,25 +569,25 @@ class DNSText(DNSRecord):
 
     """A DNS text record"""
 
-    def __init__(self, name, type_, class_, ttl, text):
+    def __init__(self, name: str, type_: int, class_: int, ttl: float, text: bytes):
         assert isinstance(text, bytes)
         DNSRecord.__init__(self, name, type_, class_, ttl)
         self.text = text
 
-    def write(self, out):
+    def write(self, out: 'DNSOutgoing') -> None:
         """Used in constructing an outgoing packet"""
         out.write_string(self.text)
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         """Tests equality on text"""
         return (isinstance(other, DNSText) and DNSEntry.__eq__(self, other) and
                 self.text == other.text)
 
-    def __ne__(self, other):
+    def __ne__(self, other: Any) -> bool:
         """Non-equality test"""
         return not self.__eq__(other)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """String representation"""
         if len(self.text) > 10:
             return self.to_string(self.text[:7]) + "..."
@@ -599,22 +599,22 @@ class DNSService(DNSRecord):
 
     """A DNS service record"""
 
-    def __init__(self, name, type_, class_, ttl,
-                 priority, weight, port, server):
+    def __init__(self, name: str, type_: int, class_: int, ttl: float,
+                 priority: int, weight: int, port: int, server: str):
         DNSRecord.__init__(self, name, type_, class_, ttl)
         self.priority = priority
         self.weight = weight
         self.port = port
         self.server = server
 
-    def write(self, out):
+    def write(self, out: 'DNSOutgoing') -> None:
         """Used in constructing an outgoing packet"""
         out.write_short(self.priority)
         out.write_short(self.weight)
         out.write_short(self.port)
         out.write_name(self.server)
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         """Tests equality on priority, weight, port and server"""
         return (isinstance(other, DNSService) and
                 DNSEntry.__eq__(self, other) and
@@ -623,11 +623,11 @@ class DNSService(DNSRecord):
                 self.port == other.port and
                 self.server == other.server)
 
-    def __ne__(self, other):
+    def __ne__(self, other: Any) -> bool:
         """Non-equality test"""
         return not self.__eq__(other)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """String representation"""
         return self.to_string("%s:%s" % (self.server, self.port))
 
@@ -636,7 +636,7 @@ class DNSIncoming(QuietLogger):
 
     """Object representation of an incoming DNS packet"""
 
-    def __init__(self, data):
+    def __init__(self, data: bytes):
         """Constructor from string holding bytes of packet"""
         self.offset = 0
         self.data = data
@@ -660,19 +660,19 @@ class DNSIncoming(QuietLogger):
             self.log_exception_warning((
                 'Choked at offset %d while unpacking %r', self.offset, data))
 
-    def unpack(self, format_):
+    def unpack(self, format_: bytes) -> tuple:
         length = struct.calcsize(format_)
         info = struct.unpack(
             format_, self.data[self.offset:self.offset + length])
         self.offset += length
         return info
 
-    def read_header(self):
+    def read_header(self) -> None:
         """Reads header portion of packet"""
         (self.id, self.flags, self.num_questions, self.num_answers,
          self.num_authorities, self.num_additionals) = self.unpack(b'!6H')
 
-    def read_questions(self):
+    def read_questions(self) -> None:
         """Reads questions section of packet"""
         for i in range(self.num_questions):
             name = self.read_name()
@@ -685,23 +685,23 @@ class DNSIncoming(QuietLogger):
     #     """Reads an integer from the packet"""
     #     return self.unpack(b'!I')[0]
 
-    def read_character_string(self):
+    def read_character_string(self) -> bytes:
         """Reads a character string from the packet"""
         length = self.data[self.offset]
         self.offset += 1
         return self.read_string(length)
 
-    def read_string(self, length):
+    def read_string(self, length: int) -> bytes:
         """Reads a string of a given length from the packet"""
         info = self.data[self.offset:self.offset + length]
         self.offset += length
         return info
 
-    def read_unsigned_short(self):
+    def read_unsigned_short(self) -> int:
         """Reads an unsigned short from the packet"""
-        return self.unpack(b'!H')[0]
+        return cast(int, self.unpack(b'!H')[0])
 
-    def read_others(self):
+    def read_others(self) -> None:
         """Reads the answers, authorities and additionals section of the
         packet"""
         n = self.num_answers + self.num_authorities + self.num_additionals
@@ -744,15 +744,15 @@ class DNSIncoming(QuietLogger):
         """Returns true if this is a query"""
         return (self.flags & _FLAGS_QR_MASK) == _FLAGS_QR_QUERY
 
-    def is_response(self):
+    def is_response(self) -> bool:
         """Returns true if this is a response"""
         return (self.flags & _FLAGS_QR_MASK) == _FLAGS_QR_RESPONSE
 
-    def read_utf(self, offset, length):
+    def read_utf(self, offset: int, length: int) -> str:
         """Reads a UTF-8 string of a given length from the packet"""
         return str(self.data[offset:offset + length], 'utf-8', 'replace')
 
-    def read_name(self):
+    def read_name(self) -> str:
         """Reads a domain name from the packet"""
         result = ''
         off = self.offset
@@ -791,7 +791,7 @@ class DNSOutgoing:
 
     """Object representation of an outgoing packet"""
 
-    def __init__(self, flags, multicast=True):
+    def __init__(self, flags: int, multicast: bool = True):
         self.finished = False
         self.id = 0
         self.multicast = multicast
@@ -802,11 +802,11 @@ class DNSOutgoing:
         self.state = self.State.init
 
         self.questions = []  # type: List[DNSQuestion]
-        self.answers = []  # type: List[Tuple[DNSEntry, float]]
+        self.answers = []  # type: List[Tuple[DNSRecord, float]]
         self.authorities = []  # type: List[DNSPointer]
         self.additionals = []  # type: List[DNSAddress]
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return '<DNSOutgoing:{%s}>' % ', '.join([
             'multicast=%s' % self.multicast,
             'flags=%s' % self.flags,
@@ -820,26 +820,26 @@ class DNSOutgoing:
         init = 0
         finished = 1
 
-    def add_question(self, record):
+    def add_question(self, record: DNSQuestion) -> None:
         """Adds a question"""
         self.questions.append(record)
 
-    def add_answer(self, inp, record):
+    def add_answer(self, inp: DNSIncoming, record: DNSRecord) -> None:
         """Adds an answer"""
         if not record.suppressed_by(inp):
             self.add_answer_at_time(record, 0)
 
-    def add_answer_at_time(self, record, now):
+    def add_answer_at_time(self, record: DNSRecord, now: float) -> None:
         """Adds an answer if it does not expire by a certain time"""
         if record is not None:
             if now == 0 or not record.is_expired(now):
                 self.answers.append((record, now))
 
-    def add_authorative_answer(self, record):
+    def add_authorative_answer(self, record: DNSPointer) -> None:
         """Adds an authoritative answer"""
         self.authorities.append(record)
 
-    def add_additional_answer(self, record):
+    def add_additional_answer(self, record: DNSAddress) -> None:
         """ Adds an additional answer
 
         From: RFC 6763, DNS-Based Service Discovery, February 2013
@@ -877,34 +877,34 @@ class DNSOutgoing:
         """
         self.additionals.append(record)
 
-    def pack(self, format_, value):
+    def pack(self, format_: AnyStr, value: Any) -> None:
         self.data.append(struct.pack(format_, value))
         self.size += struct.calcsize(format_)
 
-    def write_byte(self, value):
+    def write_byte(self, value: int) -> None:
         """Writes a single byte to the packet"""
         self.pack(b'!c', int2byte(value))
 
-    def insert_short(self, index, value):
+    def insert_short(self, index: int, value: int) -> None:
         """Inserts an unsigned short in a certain position in the packet"""
         self.data.insert(index, struct.pack(b'!H', value))
         self.size += 2
 
-    def write_short(self, value):
+    def write_short(self, value: int) -> None:
         """Writes an unsigned short to the packet"""
         self.pack(b'!H', value)
 
-    def write_int(self, value):
+    def write_int(self, value: SupportsInt) -> None:
         """Writes an unsigned integer to the packet"""
         self.pack(b'!I', int(value))
 
-    def write_string(self, value):
+    def write_string(self, value: bytes) -> None:
         """Writes a string to the packet"""
         assert isinstance(value, bytes)
         self.data.append(value)
         self.size += len(value)
 
-    def write_utf(self, s):
+    def write_utf(self, s: str) -> None:
         """Writes a UTF-8 string of a given length to the packet"""
         utfstr = s.encode('utf-8')
         length = len(utfstr)
@@ -913,7 +913,7 @@ class DNSOutgoing:
         self.write_byte(length)
         self.write_string(utfstr)
 
-    def write_character_string(self, value):
+    def write_character_string(self, value: bytes) -> None:
         assert isinstance(value, bytes)
         length = len(value)
         if length > 256:
@@ -921,7 +921,7 @@ class DNSOutgoing:
         self.write_byte(length)
         self.write_string(value)
 
-    def write_name(self, name):
+    def write_name(self, name: str) -> None:
         """
         Write names to packet
 
@@ -968,13 +968,13 @@ class DNSOutgoing:
             # this is the end of a name
             self.write_byte(0)
 
-    def write_question(self, question):
+    def write_question(self, question: DNSQuestion) -> None:
         """Writes a question to the packet"""
         self.write_name(question.name)
         self.write_short(question.type)
         self.write_short(question.class_)
 
-    def write_record(self, record, now):
+    def write_record(self, record: DNSRecord, now: float) -> int:
         """Writes a record (answer, authoritative answer, additional) to
         the packet"""
         if self.state == self.State.finished:
@@ -1046,15 +1046,15 @@ class DNSCache:
 
     """A cache of DNS entries"""
 
-    def __init__(self):
-        self.cache = {}  # type: Dict[str, List[DNSEntry]]
+    def __init__(self) -> None:
+        self.cache = {}  # type: Dict[str, List[DNSRecord]]
 
-    def add(self, entry):
+    def add(self, entry: DNSRecord) -> None:
         """Adds an entry"""
         # Insert first in list so get returns newest entry
         self.cache.setdefault(entry.key, []).insert(0, entry)
 
-    def remove(self, entry):
+    def remove(self, entry: DNSRecord) -> None:
         """Removes an entry"""
         try:
             list_ = self.cache[entry.key]
@@ -1062,7 +1062,7 @@ class DNSCache:
         except (KeyError, ValueError):
             pass
 
-    def get(self, entry):
+    def get(self, entry: DNSEntry) -> Optional[DNSRecord]:
         """Gets an entry by key.  Will return None if there is no
         matching entry."""
         try:
@@ -1071,30 +1071,31 @@ class DNSCache:
                 if entry.__eq__(cached_entry):
                     return cached_entry
         except (KeyError, ValueError):
-            return None
+            pass
+        return None
 
-    def get_by_details(self, name, type_, class_):
+    def get_by_details(self, name: str, type_: int, class_: int) -> Optional[DNSRecord]:
         """Gets an entry by details.  Will return None if there is
         no matching entry."""
         entry = DNSEntry(name, type_, class_)
         return self.get(entry)
 
-    def entries_with_name(self, name):
+    def entries_with_name(self, name: str) -> List[DNSRecord]:
         """Returns a list of entries whose key matches the name."""
         try:
             return self.cache[name.lower()]
         except KeyError:
             return []
 
-    def current_entry_with_name_and_alias(self, name, alias):
+    def current_entry_with_name_and_alias(self, name: str, alias: str) -> Optional[DNSPointer]:
         now = current_time_millis()
-        for record in self.entries_with_name(name):
-            if (record.type == _TYPE_PTR and
-                    not record.is_expired(now) and
-                    record.alias == alias):
+        for record in (r for r in self.entries_with_name(name) if r.type == _TYPE_PTR):
+            assert isinstance(record, DNSPointer)
+            if not record.is_expired(now) and record.alias == alias:
                 return record
+        return None
 
-    def entries(self):
+    def entries(self) -> List[DNSRecord]:
         """Returns a list of all entries"""
         if not self.cache:
             return []
@@ -1117,7 +1118,7 @@ class Engine(threading.Thread):
     packets.
     """
 
-    def __init__(self, zc):
+    def __init__(self, zc: 'Zeroconf'):
         threading.Thread.__init__(self, name='zeroconf-Engine')
         self.daemon = True
         self.zc = zc
@@ -1126,7 +1127,7 @@ class Engine(threading.Thread):
         self.condition = threading.Condition()
         self.start()
 
-    def run(self):
+    def run(self) -> None:
         while not self.zc.done:
             with self.condition:
                 rs = self.readers.keys()
@@ -1150,12 +1151,12 @@ class Engine(threading.Thread):
                     if e.args[0] != socket.EBADF or not self.zc.done:
                         raise
 
-    def add_reader(self, reader, socket_):
+    def add_reader(self, reader: 'Listener', socket_: socket.socket) -> None:
         with self.condition:
             self.readers[socket_] = reader
             self.condition.notify()
 
-    def del_reader(self, socket_):
+    def del_reader(self, socket_: socket.socket) -> None:
         with self.condition:
             del self.readers[socket_]
             self.condition.notify()
@@ -1170,11 +1171,11 @@ class Listener(QuietLogger):
     It requires registration with an Engine object in order to have
     the read() method called when a socket is available for reading."""
 
-    def __init__(self, zc):
+    def __init__(self, zc: 'Zeroconf'):
         self.zc = zc
-        self.data = None
+        self.data = None  # type: Optional[bytes]
 
-    def handle_read(self, socket_):
+    def handle_read(self, socket_: socket.socket) -> None:
         try:
             data, (addr, port) = socket_.recvfrom(_MAX_MSG_ABSOLUTE)
         except Exception:
@@ -1208,13 +1209,13 @@ class Reaper(threading.Thread):
     """A Reaper is used by this module to remove cache entries that
     have expired."""
 
-    def __init__(self, zc):
+    def __init__(self, zc: 'Zeroconf'):
         threading.Thread.__init__(self, name='zeroconf-Reaper')
         self.daemon = True
         self.zc = zc
         self.start()
 
-    def run(self):
+    def run(self) -> None:
         while True:
             self.zc.wait(10 * 1000)
             if self.zc.done:
@@ -1226,11 +1227,14 @@ class Reaper(threading.Thread):
                     self.zc.cache.remove(record)
 
 
-class Signal:
-    def __init__(self):
-        self._handlers = []  # type: List[Callable[..., None]]
+SignalHandlerType = Callable[..., None]
 
-    def fire(self, **kwargs) -> None:
+
+class Signal:
+    def __init__(self) -> None:
+        self._handlers = []  # type: List[SignalHandlerType]
+
+    def fire(self, **kwargs: Any) -> None:
         for h in list(self._handlers):
             h(**kwargs)
 
@@ -1241,14 +1245,14 @@ class Signal:
 
 class SignalRegistrationInterface:
 
-    def __init__(self, handlers):
+    def __init__(self, handlers: MutableSequence[SignalHandlerType]):
         self._handlers = handlers
 
-    def register_handler(self, handler):
+    def register_handler(self, handler: SignalHandlerType) -> 'SignalRegistrationInterface':
         self._handlers.append(handler)
         return self
 
-    def unregister_handler(self, handler):
+    def unregister_handler(self, handler: SignalHandlerType) -> 'SignalRegistrationInterface':
         self._handlers.remove(handler)
         return self
 
@@ -1259,10 +1263,10 @@ class RecordUpdateListener:
 
 
 class ServiceListener:
-    def add_service(self, zc, type_, name) -> None:
+    def add_service(self, zc: 'Zeroconf', type_: str, name: str) -> None:
         raise NotImplementedError()
 
-    def remove_service(self, zc, type_, name) -> None:
+    def remove_service(self, zc: 'Zeroconf', type_: str, name: str) -> None:
         raise NotImplementedError()
 
 
@@ -1274,7 +1278,9 @@ class ServiceBrowser(RecordUpdateListener, threading.Thread):
     remove_service() methods called when this browser
     discovers changes in the services availability."""
 
-    def __init__(self, zc: 'Zeroconf', type_: str, handlers=None, listener=None,
+    def __init__(self, zc: 'Zeroconf', type_: str,
+                 handlers: Union[None, ServiceListener, MutableSequence[SignalHandlerType]] = None,
+                 listener: Optional[ServiceListener] = None,
                  addr: str = _MDNS_ADDR, port: int = _MDNS_PORT, delay: int = _BROWSER_TIME) -> None:
         """Creates a browser for a specific type"""
         assert handlers or listener, 'You need to specify at least one handler'
@@ -1298,14 +1304,16 @@ class ServiceBrowser(RecordUpdateListener, threading.Thread):
         self.done = False
 
         if hasattr(handlers, 'add_service'):
-            listener = handlers
+            listener = cast(ServiceListener, handlers)
             handlers = None
 
         handlers = handlers or []
 
         if listener:
-            def on_change(zeroconf, service_type, name, state_change):
+            def on_change(zeroconf: Zeroconf, service_type: str, name: str,
+                          state_change: ServiceStateChange) -> None:
                 args = (zeroconf, service_type, name)
+                assert listener is not None
                 if state_change is ServiceStateChange.Added:
                     listener.add_service(*args)
                 elif state_change is ServiceStateChange.Removed:
@@ -1359,12 +1367,12 @@ class ServiceBrowser(RecordUpdateListener, threading.Thread):
             if expires < self.next_time:
                 self.next_time = expires
 
-    def cancel(self):
+    def cancel(self) -> None:
         self.done = True
         self.zc.remove_listener(self)
         self.join()
 
-    def run(self):
+    def run(self) -> None:
         self.zc.add_listener(self, DNSQuestion(self.type, _TYPE_PTR, _CLASS_IN))
 
         while True:
@@ -1398,7 +1406,8 @@ class ServiceInfo(RecordUpdateListener):
     """Service information"""
 
     def __init__(self, type_: str, name: str, address: Optional[bytes] = None, port: Optional[int] = None,
-                 weight: int = 0, priority: int = 0, properties=b'', server: Optional[str] = None) -> None:
+                 weight: int = 0, priority: int = 0, properties: Union[bytes, ServicePropertiesType] = b'',
+                 server: Optional[str] = None) -> None:
         """Create a service description.
 
         type_: fully qualified service type name
@@ -1433,7 +1442,7 @@ class ServiceInfo(RecordUpdateListener):
     def properties(self) -> ServicePropertiesType:
         return self._properties
 
-    def _set_properties(self, properties: Union[bytes, ServicePropertiesType]):
+    def _set_properties(self, properties: Union[bytes, ServicePropertiesType]) -> None:
         """Sets properties and text of this info from a dictionary"""
         if isinstance(properties, dict):
             self._properties = properties
@@ -1463,7 +1472,7 @@ class ServiceInfo(RecordUpdateListener):
         else:
             self.text = properties
 
-    def _set_text(self, text):
+    def _set_text(self, text: bytes) -> None:
         """Sets properties and text given a text field"""
         self.text = text
         result = {}  # type: ServicePropertiesType
@@ -1479,15 +1488,15 @@ class ServiceInfo(RecordUpdateListener):
         for s in strs:
             parts = s.split(b'=', 1)
             try:
-                key, value = parts
+                key, bvalue = parts
             except ValueError:
                 # No equals sign at all
                 key = s
                 value = False
             else:
-                if value == b'true':
+                if bvalue == b'true':
                     value = True
-                elif value == b'false' or not value:
+                elif bvalue == b'false' or not bvalue:
                     value = False
 
             # Only update non-existent properties
@@ -1496,7 +1505,7 @@ class ServiceInfo(RecordUpdateListener):
 
         self._properties = result
 
-    def get_name(self):
+    def get_name(self) -> str:
         """Name accessor"""
         if self.type is not None and self.name.endswith("." + self.type):
             return self.name[:len(self.name) - len(self.type) - 1]
@@ -1611,17 +1620,18 @@ class ZeroconfServiceTypes(ServiceListener):
     """
     Return all of the advertised services on any local networks
     """
-    def __init__(self):
+    def __init__(self) -> None:
         self.found_services = set()  # type: Set[str]
 
-    def add_service(self, zc, type_, name):
+    def add_service(self, zc: 'Zeroconf', type_: str, name: str) -> None:
         self.found_services.add(name)
 
-    def remove_service(self, zc, type_, name):
+    def remove_service(self, zc: 'Zeroconf', type_: str, name: str) -> None:
         pass
 
     @classmethod
-    def find(cls, zc=None, timeout=5, interfaces=InterfaceChoice.All):
+    def find(cls, zc: Optional['Zeroconf'] = None, timeout: float = 5,
+             interfaces: InterfaceChoice = InterfaceChoice.All) -> Tuple[str, ...]:
         """
         Return all of the advertised services on any local networks.
 
