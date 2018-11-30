@@ -570,7 +570,7 @@ class DNSText(DNSRecord):
     """A DNS text record"""
 
     def __init__(self, name, type_, class_, ttl, text):
-        assert isinstance(text, (bytes, type(None)))
+        assert isinstance(text, bytes)
         DNSRecord.__init__(self, name, type_, class_, ttl)
         self.text = text
 
